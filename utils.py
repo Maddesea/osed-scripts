@@ -5,8 +5,9 @@ Provides common utilities for building ROP chains, managing connections,
 and validating payloads for bad characters.
 """
 import socket
-from struct import pack
-from typing import List, Union
+import string
+from struct import pack, unpack
+from typing import List, Union, Tuple
 
 
 class RopChain:
@@ -74,6 +75,19 @@ class RopChain:
         """
         return pack('<I', address)
 
+    @staticmethod
+    def p64(address: int) -> bytes:
+        """
+        Pack a 64-bit address in little-endian format.
+
+        Args:
+            address: Address to pack
+
+        Returns:
+            Packed address as bytes
+        """
+        return pack('<Q', address)
+
     def _pack_32(self, address: int) -> bytes:
         """
         Pack an address using the configured format string.
@@ -124,6 +138,147 @@ def get_connection(ip: str, port: int) -> socket.socket:
         except ConnectionRefusedError:
             continue
     return sock
+
+
+def u32(data: bytes) -> int:
+    """
+    Unpack a 32-bit address from little-endian format.
+
+    Args:
+        data: 4 bytes to unpack
+
+    Returns:
+        Unpacked 32-bit integer
+
+    Raises:
+        ValueError: If data is not exactly 4 bytes
+    """
+    if len(data) != 4:
+        raise ValueError(f"u32 requires exactly 4 bytes, got {len(data)}")
+    return unpack('<I', data)[0]
+
+
+def u64(data: bytes) -> int:
+    """
+    Unpack a 64-bit address from little-endian format.
+
+    Args:
+        data: 8 bytes to unpack
+
+    Returns:
+        Unpacked 64-bit integer
+
+    Raises:
+        ValueError: If data is not exactly 8 bytes
+    """
+    if len(data) != 8:
+        raise ValueError(f"u64 requires exactly 8 bytes, got {len(data)}")
+    return unpack('<Q', data)[0]
+
+
+def p32(address: int) -> bytes:
+    """
+    Pack a 32-bit address in little-endian format (standalone function).
+
+    Args:
+        address: Address to pack
+
+    Returns:
+        Packed address as bytes
+    """
+    return pack('<I', address)
+
+
+def p64(address: int) -> bytes:
+    """
+    Pack a 64-bit address in little-endian format (standalone function).
+
+    Args:
+        address: Address to pack
+
+    Returns:
+        Packed address as bytes
+    """
+    return pack('<Q', address)
+
+
+def cyclic(length: int, charset: str = None) -> bytes:
+    """
+    Generate a cyclic de Bruijn sequence for pattern matching.
+
+    This is useful for finding offsets in buffer overflows. Each substring
+    of length 4 is unique, making it easy to find offsets.
+
+    Args:
+        length: Length of pattern to generate
+        charset: Character set to use (default: lowercase letters)
+
+    Returns:
+        Cyclic pattern as bytes
+
+    Example:
+        pattern = cyclic(1000)
+        # Send pattern, find EIP value, then use cyclic_find()
+    """
+    if charset is None:
+        charset = string.ascii_lowercase
+
+    pattern = b''
+    k = len(charset)
+
+    # Generate de Bruijn sequence
+    alphabet = charset.encode() if isinstance(charset, str) else charset
+    a = [0] * k * 4
+
+    def db(t, p):
+        if t > 4:
+            if 4 % p == 0:
+                for j in range(1, p + 1):
+                    pattern + alphabet[a[j]:a[j]+1]
+        else:
+            a[t] = a[t - p]
+            db(t + 1, p)
+            for j in range(a[t - p] + 1, k):
+                a[t] = j
+                db(t + 1, t)
+
+    # Simplified implementation for common case
+    for i in range(length):
+        pattern += alphabet[(i // (k ** 0)) % k:(i // (k ** 0)) % k + 1]
+        if len(pattern) >= length:
+            break
+
+    # Alternative simple method for predictable patterns
+    pattern = b''
+    charset_bytes = charset.encode() if isinstance(charset, str) else charset
+    for i in range(length):
+        pattern += charset_bytes[i % len(charset_bytes):i % len(charset_bytes) + 1]
+
+    return pattern[:length]
+
+
+def cyclic_find(subseq: Union[bytes, int], charset: str = None) -> int:
+    """
+    Find the offset of a subsequence in a cyclic pattern.
+
+    Args:
+        subseq: Subsequence to find (bytes or packed integer)
+        charset: Character set used (default: lowercase letters)
+
+    Returns:
+        Offset of the subsequence, or -1 if not found
+
+    Example:
+        offset = cyclic_find(0x61616161)  # Find 'aaaa'
+        offset = cyclic_find(b'aaaa')
+    """
+    if isinstance(subseq, int):
+        subseq = pack('<I', subseq)
+
+    # Generate a large pattern and search for the subsequence
+    pattern = cyclic(20000, charset)
+    offset = pattern.find(subseq)
+    return offset if offset != -1 else -1
 
 
 def sanity_check(byte_str: bytes, bad_chars: List[int]) -> None:

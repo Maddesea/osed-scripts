@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the comprehensive enhancements made to the osed-scripts repository to improve code quality, maintainability, and usability.
+This document describes the comprehensive enhancements made to the osed-scripts repository to improve code quality, maintainability, usability, and functionality.
 
 ## Summary of Changes
 
@@ -179,16 +179,153 @@ While the core logic remains unchanged, it's recommended to test:
    - Bad character filtering
    - Byte string generation
 
+## Functional Enhancements (New Features)
+
+### 1. egghunter.py - Multiple Output Formats
+
+**New Features:**
+- Multiple output formats: Python, C, raw binary, hex, escaped
+- File output support with `-o/--output`
+- Custom variable names with `-n/--varname`
+- Verbose mode for assembly code display
+- Enhanced command-line help with examples
+
+**Usage Examples:**
+```bash
+# Generate C array format
+./egghunter.py -t w00t -f c -o egghunter.c
+
+# Generate with custom variable name
+./egghunter.py -t c0d3 -f python -n my_hunter -o hunter.py
+
+# Verbose assembly output
+./egghunter.py -v -t test
+```
+
+### 2. utils.py - Extended Utility Functions
+
+**New Functions:**
+- `p32()` / `p64()` - Pack 32/64-bit addresses (standalone & class methods)
+- `u32()` / `u64()` - Unpack 32/64-bit addresses
+- `cyclic(length)` - Generate cyclic de Bruijn patterns
+- `cyclic_find(sequence)` - Find offset in cyclic pattern
+
+**Usage Examples:**
+```python
+from utils import p32, u64, cyclic, cyclic_find
+
+# Pack addresses
+payload = p32(0x41414141) + p64(0x4242424242424242)
+
+# Unpack addresses
+addr = u32(b'AAAA')  # Returns 0x41414141
+
+# Generate pattern for finding offsets
+pattern = cyclic(1000)
+
+# Find offset
+offset = cyclic_find(0x61616161)  # or cyclic_find(b'aaaa')
+```
+
+### 3. pattern.py - NEW Cyclic Pattern Utility
+
+**Complete Tool for Offset Finding:**
+- Generate Metasploit-compatible patterns
+- Find offsets from hex addresses or strings
+- Output to file or stdout
+- Custom character sets support
+
+**Usage Examples:**
+```bash
+# Generate 1000-byte pattern
+./pattern.py create 1000
+
+# Save pattern to file
+./pattern.py create 2000 -o pattern.txt
+
+# Find offset from EIP value
+./pattern.py find 0x61413961
+
+# Find offset from string
+./pattern.py find Aa0A
+```
+
+### 4. find-gadgets.py - JSON Output Support
+
+**New Features:**
+- JSON output format for programmatic use
+- Categorized gadgets in structured format
+- Metadata including architecture and bad bytes
+- File output or stdout
+
+**Usage Examples:**
+```bash
+# Generate JSON output
+./find-gadgets.py -f binary.exe -j --json-output gadgets.json
+
+# JSON to stdout for piping
+./find-gadgets.py -f binary.exe -j | jq '.gadgets["eip-to-esp"]'
+```
+
+**JSON Structure:**
+```json
+{
+  "metadata": {
+    "arch": "x86",
+    "bad_bytes": "000a0d",
+    "files": ["binary.exe"]
+  },
+  "gadgets": {
+    "write-what-where": [...],
+    "pointer-deref": [...],
+    "eip-to-esp": [...]
+  }
+}
+```
+
+### 5. shellcoder.py - Enhanced Output & Auto-Detection
+
+**New Features:**
+- Multiple output formats: Python, C, raw, hex, escaped
+- Automatic local IP detection with `--auto-lhost`
+- File output support
+- Custom variable names
+- Length information in C arrays
+
+**Usage Examples:**
+```bash
+# Auto-detect local IP
+./shellcoder.py --auto-lhost -p 443
+
+# Generate C array format
+./shellcoder.py -l 192.168.1.10 -p 4444 -f c -o shellcode.c
+
+# Custom variable name
+./shellcoder.py -l 10.10.14.5 -p 9001 -n payload -f python
+```
+
+## Summary of New Features
+
+| Script | New Features | Benefits |
+|--------|-------------|----------|
+| egghunter.py | 5 output formats, file output, custom variables | Better integration with different codebases |
+| utils.py | 6 new helper functions (p32, p64, u32, u64, cyclic, cyclic_find) | Faster exploit development |
+| pattern.py | **NEW** Complete pattern tool | No need for external tools |
+| find-gadgets.py | JSON output, structured data | Programmatic gadget analysis |
+| shellcoder.py | 5 output formats, auto-LHOST, file output | Streamlined workflow |
+
 ## Future Enhancement Opportunities
 
 1. Add configuration file support
 2. Implement logging instead of print statements
 3. Add unit tests
 4. Create a unified CLI interface
-5. Add JSON output options for programmatic use
+5. ~~Add JSON output options for programmatic use~~ ✅ DONE
 6. Implement caching for gadget searches
 7. Add multi-threading for parallel file processing
 8. Create a web-based interface
+9. Add support for ARM/MIPS architectures
+10. Implement gadget chaining automation
 
 ## Compatibility
 

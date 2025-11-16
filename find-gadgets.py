@@ -7,12 +7,13 @@ from binary files, categorizing them by type for easier exploit development.
 """
 import re
 import sys
+import json
 import shutil
 import argparse
 import tempfile
 import subprocess
 from pathlib import Path
-from typing import List, Tuple, Set
+from typing import List, Tuple, Set, Dict, Any
 import multiprocessing
 import platform
 
@@ -199,6 +200,53 @@ class Gadgetizer:
                 for gadget in self.ropper_svc.getFileFor(name=file).gadgets:
                     f.write(f"{gadget}\n")
 
+    def to_json(self) -> Dict[str, Any]:
+        """
+        Convert gadgets to JSON format.
+
+        Returns:
+            Dictionary containing categorized gadgets
+        """
+        result = {
+            "metadata": {
+                "arch": self.arch,
+                "bad_bytes": self.badbytes,
+                "files": [f.split(":")[0] if ":" in f else f for f in self.files]
+            },
+            "gadgets": {}
+        }
+
+        # Categorize gadgets
+        reg_prefix = "e" if self.arch == "x86" else "r"
+
+        categories = {
+            "write-what-where": ["mov [???], ???;"],
+            "pointer-deref": ["mov ???, [???];"],
+            "swap-register": ["mov ???, ???;", "xchg ???, ???;", "push ???; pop ???;"],
+            "increment": ["inc ???;"],
+            "decrement": ["dec ???;"],
+            "add": [f"add ???, {reg_prefix}??;"],
+            "subtract": [f"sub ???, {reg_prefix}??;"],
+            "negate": [f"neg {reg_prefix}??;"],
+            "xor": [f"xor {reg_prefix}??, 0x????????"],
+            "push": [f"push {reg_prefix}??;"],
+            "pop": [f"pop {reg_prefix}??;"],
+            "pushad": ["pushad;"],
+            "eip-to-esp": [f"jmp {reg_prefix}sp;", "leave;", f"call {reg_prefix}sp;"]
+        }
+
+        for category, patterns in categories.items():
+            result["gadgets"][category] = []
+            for pattern in patterns:
+                for file, gadget in self.get_gadgets(pattern):
+                    result["gadgets"][category].append({
+                        "address": hex(gadget.address),
+                        "instructions": gadget.simpleString().split(": ")[1] if ": " in gadget.simpleString() else gadget.simpleString(),
+                        "file": file
+                    })
+
+        return result
+
 
 def add_missing_gadgets(ropper_addresses: Set[str], in_file: str, outfile: str, bad_bytes: List[str], base_address: str = None) -> None:
     """
@@ -374,9 +422,26 @@ def main(args):
     if platform.system() == "Darwin":
         #Fix issue with Ropper in macOS -> AttributeError: 'Ropper' object has no attribute '__gatherGadgetsByEndings'
         multiprocessing.set_start_method('fork')
-    
+
     g = Gadgetizer(args.files, args.bad_chars, args.output, args.arch, args.color)
 
+    # JSON output mode
+    if args.json:
+        gadget_data = g.to_json()
+        json_output = json.dumps(gadget_data, indent=2)
+
+        if args.json_output:
+            try:
+                with open(args.json_output, "w") as f:
+                    f.write(json_output)
+                print(f"[bright_green][+][/bright_green] JSON output written to [bright_blue]{args.json_output}[/bright_blue]")
+            except IOError as e:
+                print(f"[bright_red][!][/bright_red] Failed to write JSON: {e}", file=sys.stderr)
+        else:
+            og_print(json_output)
+        return
+
+    # Normal output mode
     tree = Tree(
         f'[bright_green][+][/bright_green] Categorized gadgets :: {" ".join(sys.argv)}'
     )
@@ -449,6 +514,17 @@ if __name__ == "__main__":
         "--skip-rp",
         help="don't run rp++ to find additional gadgets (default: False)",
         action='store_true',
+    )
+    parser.add_argument(
+        "-j",
+        "--json",
+        help="output gadgets in JSON format",
+        action='store_true',
+    )
+    parser.add_argument(
+        "--json-output",
+        help="file to write JSON output (default: stdout)",
+        metavar="FILE",
     )
 
     args = parser.parse_args()

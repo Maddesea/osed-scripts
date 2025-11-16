@@ -165,6 +165,49 @@ def check_bad_chars(encoding: bytes, bad_chars: List[str]) -> None:
         raise SystemExit("[!] Remove bad characters and try again")
 
 
+def format_output(encoding: bytes, output_format: str, varname: str = "egghunter") -> str:
+    """
+    Format egghunter bytes in various output formats.
+
+    Args:
+        encoding: Assembled egghunter bytes
+        output_format: Output format (python, c, raw, hex, escaped)
+        varname: Variable name for output
+
+    Returns:
+        Formatted string representation
+    """
+    if output_format == "python":
+        result = f'{varname} = b"'
+        for enc in encoding:
+            result += "\\x{0:02x}".format(enc)
+        result += '"'
+        return result
+
+    elif output_format == "c":
+        result = f"unsigned char {varname}[] = {{\n    "
+        for i, enc in enumerate(encoding):
+            if i > 0 and i % 12 == 0:
+                result += "\n    "
+            result += "0x{0:02x}".format(enc)
+            if i < len(encoding) - 1:
+                result += ", "
+        result += "\n};"
+        return result
+
+    elif output_format == "hex":
+        return "".join("{0:02x}".format(enc) for enc in encoding)
+
+    elif output_format == "escaped":
+        return "".join("\\x{0:02x}".format(enc) for enc in encoding)
+
+    elif output_format == "raw":
+        return encoding.decode('latin-1')
+
+    else:
+        return format_output(encoding, "python", varname)
+
+
 def main(args):
     """Main function to generate and display the egghunter."""
     try:
@@ -178,8 +221,9 @@ def main(args):
     except Exception as e:
         print(f"[!] Failed to initialize keystone engine: {e}", file=sys.stderr)
         raise SystemExit(1)
+
     try:
-        if args.seh:
+        if args.seh or not args.verbose:
             encoding, count = eng.asm(egghunter)
         else:
             print("[+] Egghunter assembly code + corresponding bytes")
@@ -203,25 +247,39 @@ def main(args):
         print("[!] Failed to generate egghunter: no bytes were assembled", file=sys.stderr)
         raise SystemExit(1)
 
-    final = ""
-    final += 'egghunter = b"'
-    for enc in encoding:
-        final += "\\x{0:02x}".format(enc)
-    final += '"'
-
     # Check for bad characters
     check_bad_chars(encoding, args.bad_chars)
 
+    # Format output
+    output_str = format_output(encoding, args.format, args.varname)
+
+    # Display info
     print(f"[+] egghunter created!")
     print(f"[=]   len: {len(encoding)} bytes")
     print(f"[=]   tag: {args.tag * 2}")
-    print(f"[=]   ver: {['NtAccessCheckAndAuditAlarm', 'SEH'][args.seh]}\n")
-    print(final)
+    print(f"[=]   ver: {['NtAccessCheckAndAuditAlarm', 'SEH'][args.seh]}")
+    print(f"[=]   fmt: {args.format}\n")
+
+    # Save to file if requested
+    if args.output:
+        try:
+            if args.format == "raw":
+                with open(args.output, "wb") as f:
+                    f.write(encoding)
+            else:
+                with open(args.output, "w") as f:
+                    f.write(output_str)
+            print(f"[+] Egghunter saved to: {args.output}\n")
+        except IOError as e:
+            print(f"[!] Failed to write output file: {e}", file=sys.stderr)
+
+    print(output_str)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Creates an egghunter compatible with the OSED lab VM"
+        description="Creates an egghunter compatible with the OSED lab VM",
+        epilog="Example: %(prog)s -t w00t -b 00 0a 0d -f c -o egghunter.c"
     )
 
     parser.add_argument(
@@ -242,6 +300,31 @@ if __name__ == "__main__":
         "--seh",
         help="create an seh based egghunter instead of NtAccessCheckAndAuditAlarm",
         action="store_true",
+    )
+    parser.add_argument(
+        "-f",
+        "--format",
+        choices=["python", "c", "raw", "hex", "escaped"],
+        default="python",
+        help="output format (default: python)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="write output to file instead of stdout",
+        metavar="FILE",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        help="show assembly code with corresponding bytes (NtAccess only)",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-n",
+        "--varname",
+        help="variable name for output (default: egghunter)",
+        default="egghunter",
     )
 
     args = parser.parse_args()
