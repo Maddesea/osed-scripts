@@ -1,10 +1,31 @@
+"""
+find-ppr.py - Find pop-pop-ret gadgets using WinDbg/pykd
+
+This script searches for "pop r32; pop r32; ret" gadgets in loaded modules,
+filtering by bad characters. Requires WinDbg with pykd extension.
+
+Usage:
+    !py find-ppr.py -m module1 module2 -b 00 0a 0d
+"""
 import pykd
 import argparse
 from enum import Enum, auto
+from typing import List, Dict, Union
 
 
-def hex_byte(byte_str):
-    """validate user input is a hex representation of an int between 0 and 255 inclusive"""
+def hex_byte(byte_str: str) -> Union[int, str]:
+    """
+    Validate user input is a hex representation of an int between 0 and 255 inclusive.
+
+    Args:
+        byte_str: Hex string (e.g., "00", "ff") or "??" for inaccessible memory
+
+    Returns:
+        Integer value or "??" string
+
+    Raises:
+        argparse.ArgumentTypeError: If input is invalid
+    """
     if byte_str == "??":
         # windbg shows ?? when it can't access a memory region, but we shouldn't stop execution because of it
         return byte_str
@@ -50,14 +71,25 @@ class PopR32(Enum):
     edi = auto()
 
 
-def checkBadChars(bAddr, badChars):
+def checkBadChars(bAddr: bytes, badChars: List[int]) -> str:
+    """
+    Check if any bad characters are present in an address.
+
+    Args:
+        bAddr: Address bytes to check
+        badChars: List of bad character values
+
+    Returns:
+        "OK" if no bad chars found, "--" otherwise
+    """
     for i in bAddr:
         if i in badChars:
             return "--"
     return "OK"
 
 
-def main(args):
+def main(args) -> None:
+    """Search for pop-pop-ret gadgets across specified modules."""
     modules = pykd.dbgCommand("lm")
     totalGadgets = 0  # This tracks all the total number of usable gadgets
     modGadgetCount = {}  # This tracks the number of gadgets per module

