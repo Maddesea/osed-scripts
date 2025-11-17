@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
+"""
+find-gadgets.py - Find and categorize useful ROP gadgets
+
+This script uses both ropper and rp++ to find comprehensive ROP gadgets
+from binary files, categorizing them by type for easier exploit development.
+"""
 import re
 import sys
+import json
 import shutil
 import argparse
 import tempfile
 import subprocess
 from pathlib import Path
+from typing import List, Tuple, Set, Dict, Any
 import multiprocessing
 import platform
 
@@ -13,56 +21,103 @@ og_print = print
 from rich import print
 from rich.tree import Tree
 from rich.markup import escape
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from ropper import RopperService
+
+console = Console()
 
 
 class Gadgetizer:
-    def __init__(self, files, badbytes, output, arch, color):
+    """Main class for finding and categorizing ROP gadgets."""
+
+    def __init__(self, files: List[str], badbytes: List[str], output: str, arch: str, color: bool):
+        """
+        Initialize the Gadgetizer.
+
+        Args:
+            files: List of binary files to analyze (can include base addresses)
+            badbytes: List of bad characters to filter out
+            output: Output file path for gadgets
+            arch: Target architecture (x86 or x86_64)
+            color: Whether to use colored output
+        """
         self.arch = arch
         self.color = color
         self.files = files
         self.output = output
-        self.badbytes = "".join(
-            badbytes
-        )  # ropper's badbytes option has to be an instance of str
+        self.badbytes = "".join(badbytes)  # ropper's badbytes option has to be an instance of str
         self.ropper_svc = self.get_ropper_service()
-        self.addresses = set()
+        self.addresses: Set[str] = set()
 
-    def get_ropper_service(self):
-        # not all options need to be given
+    def get_ropper_service(self) -> RopperService:
+        """
+        Initialize and configure the RopperService.
+
+        Returns:
+            Configured RopperService instance
+
+        Raises:
+            SystemExit: If files cannot be loaded or analyzed
+        """
         options = {
             "color": self.color,
             "badbytes": self.badbytes,
             "type": "rop",
-        }  # if gadgets are printed, use detailed output; default: False
+        }
 
         rs = RopperService(options)
 
         for file in self.files:
-            if ":" in file:
-                file, base = file.split(":")
-                rs.addFile(file, arch=self.arch)
-                rs.clearCache()
-                rs.setImageBaseFor(name=file, imagebase=int(base, 16))
-            else:
-                rs.addFile(file, arch=self.arch)
-                rs.clearCache()
+            try:
+                if ":" in file:
+                    file, base = file.split(":")
+                    if not Path(file).exists():
+                        print(f"[bright_red][!][/bright_red] File not found: {file}", file=sys.stderr)
+                        raise SystemExit(1)
+                    rs.addFile(file, arch=self.arch)
+                    rs.clearCache()
+                    rs.setImageBaseFor(name=file, imagebase=int(base, 16))
+                else:
+                    if not Path(file).exists():
+                        print(f"[bright_red][!][/bright_red] File not found: {file}", file=sys.stderr)
+                        raise SystemExit(1)
+                    rs.addFile(file, arch=self.arch)
+                    rs.clearCache()
 
-            rs.loadGadgetsFor(file)
+                rs.loadGadgetsFor(file)
+            except Exception as e:
+                print(f"[bright_red][!][/bright_red] Failed to load file {file}: {e}", file=sys.stderr)
+                raise SystemExit(1)
 
         return rs
 
-    def get_gadgets(self, search_str, quality=1, strict=False):
-        gadgets = [
-            (f, g)
-            for f, g in self.ropper_svc.search(search=search_str, quality=quality)
-        ]  # could be memory hog
+    def get_gadgets(self, search_str: str, quality: int = 1, strict: bool = False) -> List[Tuple]:
+        """
+        Search for gadgets matching a pattern.
 
-        if not gadgets and quality < self.ropper_svc.options.inst_count and not strict:
-            # attempt highest quality gadget, continue requesting with lower quality until something is returned
-            return self.get_gadgets(search_str, quality=quality + 1)
+        Args:
+            search_str: Regex pattern to search for
+            quality: Maximum number of instructions per gadget
+            strict: If True, don't retry with lower quality
 
-        return gadgets
+        Returns:
+            List of (file, gadget) tuples
+        """
+        try:
+            gadgets = [
+                (f, g)
+                for f, g in self.ropper_svc.search(search=search_str, quality=quality)
+            ]
+
+            if not gadgets and quality < self.ropper_svc.options.inst_count and not strict:
+                # attempt highest quality gadget, continue requesting with lower quality until something is returned
+                return self.get_gadgets(search_str, quality=quality + 1)
+
+            return gadgets
+        except Exception as e:
+            print(f"[bright_yellow][!][/bright_yellow] Error searching for '{search_str}': {e}")
+            return []
 
     def _search_gadget(self, title, search_strs):
         title = f"[bright_yellow]{title}[/bright_yellow] gadgets"
@@ -145,59 +200,161 @@ class Gadgetizer:
                 for gadget in self.ropper_svc.getFileFor(name=file).gadgets:
                     f.write(f"{gadget}\n")
 
+    def to_json(self) -> Dict[str, Any]:
+        """
+        Convert gadgets to JSON format.
 
-def add_missing_gadgets(ropper_addresses: set, in_file, outfile, bad_bytes, base_address=None):
-    """ for w/e reason rp++ finds signficantly more gadgets, this function adds them to ropper's dump of all gadgets """
+        Returns:
+            Dictionary containing categorized gadgets
+        """
+        result = {
+            "metadata": {
+                "arch": self.arch,
+                "bad_bytes": self.badbytes,
+                "files": [f.split(":")[0] if ":" in f else f for f in self.files]
+            },
+            "gadgets": {}
+        }
+
+        # Categorize gadgets
+        reg_prefix = "e" if self.arch == "x86" else "r"
+
+        categories = {
+            "write-what-where": ["mov [???], ???;"],
+            "pointer-deref": ["mov ???, [???];"],
+            "swap-register": ["mov ???, ???;", "xchg ???, ???;", "push ???; pop ???;"],
+            "increment": ["inc ???;"],
+            "decrement": ["dec ???;"],
+            "add": [f"add ???, {reg_prefix}??;"],
+            "subtract": [f"sub ???, {reg_prefix}??;"],
+            "negate": [f"neg {reg_prefix}??;"],
+            "xor": [f"xor {reg_prefix}??, 0x????????"],
+            "push": [f"push {reg_prefix}??;"],
+            "pop": [f"pop {reg_prefix}??;"],
+            "pushad": ["pushad;"],
+            "eip-to-esp": [f"jmp {reg_prefix}sp;", "leave;", f"call {reg_prefix}sp;"]
+        }
+
+        for category, patterns in categories.items():
+            result["gadgets"][category] = []
+            for pattern in patterns:
+                for file, gadget in self.get_gadgets(pattern):
+                    result["gadgets"][category].append({
+                        "address": hex(gadget.address),
+                        "instructions": gadget.simpleString().split(": ")[1] if ": " in gadget.simpleString() else gadget.simpleString(),
+                        "file": file
+                    })
+
+        return result
+
+
+def add_missing_gadgets(ropper_addresses: Set[str], in_file: str, outfile: str, bad_bytes: List[str], base_address: str = None) -> None:
+    """
+    Use rp++ to find additional gadgets not found by ropper.
+
+    For some reason rp++ finds significantly more gadgets than ropper alone.
+    This function adds those missing gadgets to ropper's output.
+
+    Args:
+        ropper_addresses: Set of addresses already found by ropper
+        in_file: Binary file to analyze
+        outfile: Output file path
+        bad_bytes: List of bad characters to filter
+        base_address: Optional base address for the binary
+    """
     fname = ''
     if platform.system() == 'Linux':
         fname = 'rp-lin-x64'
     elif platform.system() == "Darwin":
         fname = 'rp-osx-x64'
+    else:
+        print(f"[bright_yellow][!][/bright_yellow] rp++ not available for {platform.system()}, skipping")
+        return
 
     rp = Path('~/.local/bin/' + fname).expanduser().resolve()
 
     if not rp.exists():
         print(f"[bright_yellow][*][/bright_yellow] rp++ not found, downloading...")
-        rp.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            rp.parent.mkdir(parents=True, exist_ok=True)
 
-        wget = shutil.which('wget')
-        if not wget:
-            print(f"[bright_red][!][/bright_red] wget not found, please install it or add -s|--skip-rp to your command")
+            wget = shutil.which('wget')
+            if not wget:
+                print(f"[bright_red][!][/bright_red] wget not found, please install it or add -s|--skip-rp to your command")
+                return
+
+            result = subprocess.run(
+                f'{wget} https://github.com/0vercl0k/rp/releases/download/v2.0.2/{fname} -O {rp}'.split(),
+                capture_output=True,
+                timeout=60
+            )
+            if result.returncode != 0:
+                print(f"[bright_red][!][/bright_red] Failed to download rp++: {result.stderr.decode()}")
+                return
+
+            rp.chmod(mode=0o755)
+        except subprocess.TimeoutExpired:
+            print(f"[bright_red][!][/bright_red] Download timed out")
+            return
+        except Exception as e:
+            print(f"[bright_red][!][/bright_red] Failed to download rp++: {e}")
             return
 
-        subprocess.run(f'{wget} https://github.com/0vercl0k/rp/releases/download/v2.0.2/{fname} -O {rp}'.split())
+    try:
+        with tempfile.TemporaryFile(mode='w+', suffix='osed-rop') as tmp_file, open(outfile, 'a') as af:
+
+            command = f'{rp} -r5 -f {in_file} --unique'
+
+            if bad_bytes:
+                bad_bytes_str = ''.join([f"\\x{byte}" for byte in bad_bytes])
+                command += f' --bad-bytes={bad_bytes_str}'
+            if base_address:
+                command += f' --va={base_address}'
+
+            print(f"[bright_green][+][/bright_green] running '{command}'")
+            try:
+                result = subprocess.run(command.split(), stdout=tmp_file, stderr=subprocess.PIPE, timeout=300)
+                if result.returncode != 0 and result.stderr:
+                    print(f"[bright_yellow][!][/bright_yellow] rp++ warning: {result.stderr.decode()}")
+            except subprocess.TimeoutExpired:
+                print(f"[bright_red][!][/bright_red] rp++ timed out after 5 minutes")
+                return
+            except Exception as e:
+                print(f"[bright_red][!][/bright_red] Failed to run rp++: {e}")
+                return
+
+            tmp_file.seek(0)
+
+            gadgets_added = 0
+            for line in tmp_file.readlines():
+                if not line.startswith('0x'):
+                    continue
+
+                rp_address = line.split(':')[0]
+
+                if rp_address not in ropper_addresses:
+                    truncated = line.rsplit(';', maxsplit=1)[0]
+                    af.write(f'{truncated}\n')
+                    gadgets_added += 1
+
+            if gadgets_added > 0:
+                print(f"[bright_green][+][/bright_green] Added {gadgets_added} additional gadgets from rp++")
+    except IOError as e:
+        print(f"[bright_red][!][/bright_red] File I/O error: {e}")
+    except Exception as e:
+        print(f"[bright_red][!][/bright_red] Unexpected error: {e}")
 
 
-        rp.chmod(mode=0o755)
+def clean_up_all_gadgets(outfile: str) -> None:
+    """
+    Normalize output from ropper and rp++.
 
-    with tempfile.TemporaryFile(mode='w+', suffix='osed-rop') as tmp_file, open(outfile, 'a') as af:
+    Both tools format their output slightly differently. This function
+    normalizes spacing and formatting for consistency.
 
-        command = f'{rp} -r5 -f {in_file} --unique'
-
-        if bad_bytes:
-            bad_bytes = ''.join([f"\\x{byte}" for byte in bad_bytes])
-            command += f' --bad-bytes={bad_bytes}'
-        if base_address:
-            command += f' --va={base_address}'
-
-        print(f"[bright_green][+][/bright_green] running '{command}'")
-        subprocess.run(command.split(), stdout=tmp_file)
-
-        tmp_file.seek(0)
-
-        for line in tmp_file.readlines():
-            if not line.startswith('0x'):
-                continue
-
-            rp_address = line.split(':')[0]
-
-            if rp_address not in ropper_addresses:
-                truncated = line.rsplit(';', maxsplit=1)[0]
-                af.write(f'{truncated}\n')
-
-
-def clean_up_all_gadgets(outfile):
-    """ normalize output from ropper and rp++ """
+    Args:
+        outfile: Path to the gadget output file
+    """
     normal_spaces = re.compile(r'[ ]{2,}')
     normal_semicolon = re.compile(r'[ ]+?;')
 
@@ -223,7 +380,14 @@ def clean_up_all_gadgets(outfile):
         f.truncate()
 
 
-def print_useful_regex(outfile, arch):
+def print_useful_regex(outfile: str, arch: str) -> None:
+    """
+    Print helpful regex patterns for searching the output file.
+
+    Args:
+        outfile: Path to the gadget output file
+        arch: Target architecture
+    """
 
     reg_prefix = "e" if arch == "x86" else "r"
     len_sort = "| awk '{ print length, $0 }' | sort -n -s -r | cut -d' ' -f2- | tail"
@@ -258,9 +422,26 @@ def main(args):
     if platform.system() == "Darwin":
         #Fix issue with Ropper in macOS -> AttributeError: 'Ropper' object has no attribute '__gatherGadgetsByEndings'
         multiprocessing.set_start_method('fork')
-    
+
     g = Gadgetizer(args.files, args.bad_chars, args.output, args.arch, args.color)
 
+    # JSON output mode
+    if args.json:
+        gadget_data = g.to_json()
+        json_output = json.dumps(gadget_data, indent=2)
+
+        if args.json_output:
+            try:
+                with open(args.json_output, "w") as f:
+                    f.write(json_output)
+                print(f"[bright_green][+][/bright_green] JSON output written to [bright_blue]{args.json_output}[/bright_blue]")
+            except IOError as e:
+                print(f"[bright_red][!][/bright_red] Failed to write JSON: {e}", file=sys.stderr)
+        else:
+            og_print(json_output)
+        return
+
+    # Normal output mode
     tree = Tree(
         f'[bright_green][+][/bright_green] Categorized gadgets :: {" ".join(sys.argv)}'
     )
@@ -333,6 +514,17 @@ if __name__ == "__main__":
         "--skip-rp",
         help="don't run rp++ to find additional gadgets (default: False)",
         action='store_true',
+    )
+    parser.add_argument(
+        "-j",
+        "--json",
+        help="output gadgets in JSON format",
+        action='store_true',
+    )
+    parser.add_argument(
+        "--json-output",
+        help="file to write JSON output (default: stdout)",
+        metavar="FILE",
     )
 
     args = parser.parse_args()

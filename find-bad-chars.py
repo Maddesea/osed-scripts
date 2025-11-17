@@ -1,9 +1,31 @@
+"""
+find-bad-chars.py - Find bad characters in memory using WinDbg/pykd
+
+This script helps identify bad characters by comparing memory contents with
+expected byte sequences. Also generates Python-ready byte strings.
+
+Usage:
+    !py find-bad-chars.py --address esp+1 --bad 1d --start 1 --end 7f
+    !py find-bad-chars.py --generate --bad 1d --start 1
+"""
 import pykd
 import argparse
+from typing import List, Union
 
 
-def hex_byte(byte_str):
-    """validate user input is a hex representation of an int between 0 and 255 inclusive"""
+def hex_byte(byte_str: str) -> Union[int, str]:
+    """
+    Validate user input is a hex representation of an int between 0 and 255 inclusive.
+
+    Args:
+        byte_str: Hex string (e.g., "00", "ff") or "??" for inaccessible memory
+
+    Returns:
+        Integer value or "??" string
+
+    Raises:
+        argparse.ArgumentTypeError: If input is invalid
+    """
     if byte_str == "??":
         # windbg shows ?? when it can't access a memory region, but we shouldn't stop execution because of it
         return byte_str
@@ -75,7 +97,13 @@ class Memdump:
         return f"{self.address}  {byte_str}"
 
 
-def find_bad_chars(args):
+def find_bad_chars(args) -> None:
+    """
+    Compare memory at address with expected byte sequence.
+
+    Args:
+        args: Parsed command-line arguments containing address, range, and bad chars
+    """
     chars = bytes(i for i in range(args.start, args.end + 1) if i not in args.bad)
 
     command = f"db {args.address} L 0n{len(chars)}"
@@ -103,7 +131,13 @@ def find_bad_chars(args):
         print()
 
 
-def generate_byte_string(args):
+def generate_byte_string(args) -> None:
+    """
+    Generate a Python byte string excluding bad characters.
+
+    Args:
+        args: Parsed command-line arguments containing range and bad chars
+    """
     known_bad = ", ".join(f'{x:02X}' for x in args.bad)
     var_str = f"chars = bytes(i for i in range({args.start}, {args.end + 1}) if i not in [{known_bad}])"
 
