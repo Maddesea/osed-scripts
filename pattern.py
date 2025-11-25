@@ -12,6 +12,7 @@ Usage:
 """
 import sys
 import argparse
+import struct
 from struct import pack, unpack
 import string
 

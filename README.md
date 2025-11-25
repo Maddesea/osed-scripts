@@ -1,10 +1,41 @@
 # osed-scripts
-bespoke tooling for offensive security's Windows Usermode Exploit Dev course (OSED)
+
+Bespoke tooling for Offensive Security's Windows Usermode Exploit Dev course (OSED)
+
+## Features
+
+- **Unified CLI** - Single `osed` command for all tools
+- **Egghunter Generation** - NtAccessCheckAndAuditAlarm and SEH-based variants
+- **Cyclic Pattern** - Generate and find offsets in de Bruijn sequences
+- **ROP Gadget Finder** - Comprehensive search using ropper + rp++
+- **WinDbg Integration** - Scripts for debugging and bad character detection
+- **Exploit Templates** - Pre-configured ROP chain skeletons
+
+## Quick Start
+
+```bash
+# Install dependencies
+pip3 install keystone-engine rich ropper capstone
+
+# Use the unified CLI
+./osed info                              # Show all available commands
+./osed egghunter -t w00t -b 00 0a 0d     # Generate egghunter
+./osed pattern create 1000               # Create cyclic pattern
+./osed pattern find 0x41414141           # Find offset
+./osed gadgets -f vuln.exe -b 00 0a 0d   # Find ROP gadgets
+```
+
+## Documentation
+
+- **[USAGE.md](USAGE.md)** - Comprehensive usage guide with examples
+- **[ENHANCEMENTS.md](ENHANCEMENTS.md)** - Recent improvements and changelog
 
 ## Table of Contents
 
+- [Unified CLI](#unified-cli)
 - [Standalone Scripts](#standalone-scripts)
     - [egghunter.py](#egghunterpy)
+    - [pattern.py](#patternpy)
     - [find-gadgets.py](#find-gadgetspy)
     - [shellcoder.py](#shellcoderpy)
     - [install-mona.sh](#install-monash)
@@ -14,9 +45,32 @@ bespoke tooling for offensive security's Windows Usermode Exploit Dev course (OS
     - [find-bad-chars.py](#find-bad-charspy)
     - [search.py](#searchpy)
 
+## Unified CLI
+
+The `osed` command provides a single entry point for all tools:
+
+```bash
+./osed                          # Show help
+./osed info                     # Display all available commands
+./osed version                  # Show version info
+./osed egghunter [OPTIONS]      # Generate egghunter
+./osed pattern create LENGTH    # Create cyclic pattern
+./osed pattern find SEQUENCE    # Find offset in pattern
+./osed gadgets -f FILES         # Find ROP gadgets
+```
+
+For detailed help on any command:
+```bash
+./osed <command> --help
+```
+
 ## Standalone Scripts
-### Installation:
-pip3 install keystone-engine numpy
+
+### Installation
+
+```bash
+pip3 install keystone-engine rich ropper capstone numpy
+```
 
 ### egghunter.py
 
@@ -45,7 +99,14 @@ generate default egghunter
 [=]   ver: NtAccessCheckAndAuditAlarm
 
 egghunter = b"\x66\x81\xca\xff\x0f\x42\x52\x31\xc0\x66\x05\xc6\x01\xcd\x2e\x3c\x05\x5a\x74\xec\xb8\x63\x30\x64\x33\x89\xd7\xaf\x75\xe7\xaf\x75\xe4\xff\xe7"
+```
 
+#### Output Formats
+
+Supports multiple output formats: `python`, `c`, `raw`, `hex`, `escaped`
+
+```bash
+./egghunter.py -t w00t -f c -o egghunter.h
 ```
 
 generate egghunter with `w00tw00t` tag
@@ -70,6 +131,39 @@ generate SEH-based egghunter while checking for bad characters (does not alter t
 
 egghunter = b"\xeb\x2a\x59\xb8\x63\x30\x64\x33\x51\x6a\xff\x31\xdb\x64\x89\x23\x83\xe9\x04\x83\xc3\x04\x64\x89\x0b\x6a\x02\x59\x89\xdf\xf3\xaf\x75\x07\xff\xe7\x66\x81\xcb\xff\x0f\x43\xeb\xed\xe8\xd1\xff\xff\xff\x6a\x0c\x59\x8b\x04\x0c\xb1\xb8\x83\x04\x08\x06\x58\x83\xc4\x10\x50\x31\xc0\xc3"
 
+```
+
+### pattern.py
+
+Cyclic pattern generator for finding buffer overflow offsets. Compatible with Metasploit's pattern_create/pattern_offset.
+
+```
+usage: pattern.py {create,find} ...
+
+Commands:
+  create    Generate cyclic pattern
+  find      Find offset in pattern
+```
+
+#### Create a pattern
+
+```bash
+./pattern.py create 1000
+# Outputs 1000 bytes of cyclic pattern
+
+./pattern.py create 2000 -o pattern.txt
+# Save to file
+```
+
+#### Find offset
+
+```bash
+./pattern.py find 0x41386141
+[+] Offset: 1028
+[=] Hex:    0x00000404
+
+./pattern.py find Aa0A
+[+] Offset: 0
 ```
 
 ### find-gadgets.py
