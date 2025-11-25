@@ -28,8 +28,20 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 # Version info
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 __author__ = "epi / OSED community"
+
+# Try to load configuration
+try:
+    from config import load_config, get_setting, create_sample_config
+    CONFIG = load_config()
+except ImportError:
+    CONFIG = {}
+    def get_setting(key, default=None, config=None):
+        return default
+    def create_sample_config(path=None):
+        print("[!] config.py not found")
+        return False
 
 
 def print_banner():
@@ -178,6 +190,38 @@ def cmd_version(args):
     print(f"Author: {__author__}")
     print(f"Python: {sys.version}")
     print(f"Location: {SCRIPT_DIR}")
+    return 0
+
+
+def cmd_config(args):
+    """Manage configuration."""
+    import json
+
+    if args.action == "show":
+        print("[+] Current configuration:")
+        print(json.dumps(CONFIG, indent=2))
+        return 0
+
+    elif args.action == "init":
+        if create_sample_config():
+            print("[+] Sample configuration created: .osedrc")
+            print("[*] Edit this file to customize default settings")
+            return 0
+        return 1
+
+    elif args.action == "path":
+        try:
+            from config import find_config_file
+            config_file = find_config_file()
+            if config_file:
+                print(f"[+] Config file: {config_file}")
+            else:
+                print("[*] No config file found")
+                print("[*] Create one with: osed config init")
+        except ImportError:
+            print("[!] config.py not found")
+        return 0
+
     return 0
 
 
@@ -360,6 +404,22 @@ def main():
         help="Display version information"
     )
     version_parser.set_defaults(func=cmd_version)
+
+    # =========================================================================
+    # config subcommand
+    # =========================================================================
+    config_parser = subparsers.add_parser(
+        "config",
+        help="Manage configuration"
+    )
+    config_parser.add_argument(
+        "action",
+        choices=["show", "init", "path"],
+        nargs="?",
+        default="show",
+        help="Config action: show (default), init (create sample), path (show config location)"
+    )
+    config_parser.set_defaults(func=cmd_config)
 
     # Parse arguments
     args = parser.parse_args()

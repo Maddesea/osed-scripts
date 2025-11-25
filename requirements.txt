@@ -1,0 +1,16 @@
+# OSED Scripts - Python Dependencies
+# Install with: pip3 install -r requirements.txt
+
+# Core dependencies (required)
+keystone-engine>=0.9.2    # Assembler for shellcode generation
+rich>=10.1.0              # Terminal formatting and colors
+ropper>=1.13.6            # ROP gadget finder
+capstone>=4.0.2           # Disassembler
+
+# Optional dependencies
+numpy>=1.20.0             # Numeric operations (for shellcoder.py)
+
+# Development dependencies (optional)
+# pytest>=6.0              # Testing framework
+# black>=21.0              # Code formatter
+# mypy>=0.900              # Type checking
